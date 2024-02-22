@@ -1,7 +1,6 @@
 // Copyright (c) HashiCorp, Inc.
 // SPDX-License-Identifier: MPL-2.0
 
-
 package opensearch
 
 import (
@@ -13,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/opensearchservice"
 	"github.com/hashicorp/aws-sdk-go-base/v2/awsv1shim/v2/tfawserr"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
@@ -23,7 +23,7 @@ import (
 func ResourceAuthorizedPrincipal() *schema.Resource {
 	return &schema.Resource{
 		CreateWithoutTimeout: resourceAuthorizedPrincipalUpsert,
-		ReadWithoutTimeout:  resourceAuthorizedPrincipalRead,
+		ReadWithoutTimeout:   resourceAuthorizedPrincipalRead,
 		UpdateWithoutTimeout: resourceAuthorizedPrincipalUpsert,
 		DeleteWithoutTimeout: resourceAuthorizedPrincipalDelete,
 
@@ -43,8 +43,8 @@ func ResourceAuthorizedPrincipal() *schema.Resource {
 				Required: true,
 			},
 			"account": {
-				Type:        schema.TypeString,
-				Required:    true,
+				Type:     schema.TypeString,
+				Required: true,
 			},
 		},
 	}
@@ -52,19 +52,19 @@ func ResourceAuthorizedPrincipal() *schema.Resource {
 
 func resourceAuthorizedPrincipalUpsert(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
-	
+
 	domain_name := d.Get("domain_name").(string)
 
 	conn := meta.(*conns.AWSClient).OpenSearchConn(ctx)
 
 	input := &opensearchservice.AuthorizeVpcEndpointAccessInput{
 		DomainName: aws.String(d.Get("domain_name").(string)),
-		Account: aws.String(d.Get("account").(string)),
+		Account:    aws.String(d.Get("account").(string)),
 	}
 
 	output, err := conn.AuthorizeVpcEndpointAccess(input)
 
-	if err != nil{
+	if err != nil {
 		return sdkdiag.AppendErrorf(diags, "Error authorizing Principal %s", err)
 	}
 
@@ -76,7 +76,6 @@ func resourceAuthorizedPrincipalUpsert(ctx context.Context, d *schema.ResourceDa
 
 	return append(diags, resourceAuthorizedPrincipalRead(ctx, d, meta)...)
 }
-
 
 func resourceAuthorizedPrincipalRead(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
 	var diags diag.Diagnostics
@@ -100,21 +99,49 @@ func resourceAuthorizedPrincipalRead(ctx context.Context, d *schema.ResourceData
 }
 
 func FindAuthorizedPrincipals(ctx context.Context, conn *opensearchservice.OpenSearchService, domainName string, id string) ([]*opensearchservice.AuthorizedPrincipal, error) {
-    input := &opensearchservice.ListVpcEndpointAccessInput{
+	input := &opensearchservice.ListVpcEndpointAccessInput{
 		DomainName: aws.String(domainName),
 	}
 
 	output, err := conn.ListVpcEndpointAccess(input)
 
+	if tfawserr.ErrCodeEquals(err, opensearchservice.ErrCodeResourceNotFoundException) {
+		return nil, &retry.NotFoundError{
+			LastError:   err,
+			LastRequest: input,
+		}
+	}
+
 	if err != nil {
 		return nil, err
 	}
 
-	principals := output.AuthorizedPrincipalList
-
-	if len(principals) == 0 {
-		return nil, 
+	if output == nil || len(output.AuthorizedPrincipalList) == 0 || output.AuthorizedPrincipalList[0] == nil {
+		return nil, tfresource.NewEmptyResultError(input)
 	}
-	return principals, nil
 
+	return output.AuthorizedPrincipalList, nil
+
+}
+
+func resourceAuthorizedPrincipalDelete(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	var diags diag.Diagnostics
+	conn := meta.(*conns.AWSClient).OpenSearchConn(ctx)
+
+	input := &opensearchservice.RevokeVpcEndpointAccessInput{
+		DomainName: aws.String(d.Get("domain_name").(string)),
+		Account:    aws.String(d.Get("account").(string)),
+	}
+
+	_, err := conn.RevokeVpcEndpointAccess(input)
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "Error rejecting principal %s: %s", d.Id(), err)
+	}
+
+	if err := waitForDomainUpdate(ctx, conn, d.Get("domain_name").(string), d.Timeout(schema.TimeoutDelete)); err != nil {
+		return sdkdiag.AppendErrorf(diags, "Error rejecting principal %s: %s", d.Id(), err)
+	}
+
+	return diags
 }
