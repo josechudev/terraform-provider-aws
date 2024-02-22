@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/hashicorp/terraform-provider-aws/internal/conns"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/sdkdiag"
+	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 )
 
 // @SDKResource("aws_opensearch_authorized_principal")
@@ -81,12 +82,24 @@ func resourceAuthorizedPrincipalRead(ctx context.Context, d *schema.ResourceData
 	var diags diag.Diagnostics
 	conn := meta.(*conns.AWSClient).OpenSearchConn(ctx)
 
-	output, err := FindAuthorizedPrincipal(ctx, conn, d.Get("domain_name").(string), d.Id())
+	principals, err := FindAuthorizedPrincipals(ctx, conn, d.Get("domain_name").(string), d.Id())
+
+	if !d.IsNewResource() && !tfresource.NotFound(err) {
+		log.Printf("[WARN] OpenSearch Authorized Principal (%s) not found, removing from state", d.Id())
+		d.SetId("")
+		return diags
+	}
+
+	if err != nil {
+		return sdkdiag.AppendErrorf(diags, "reading OpenSearch Authorized Principal (%s): %s", d.Id(), err)
+	}
+
+	d.Set("authorized_principals", principals)
 
 	return diags
 }
 
-func FindAuthorizedPrincipal(ctx context.Context, conn *opensearchservice.OpenSearchService, domainName string, id string) (*opensearchservice.AuthorizedPrincipal, error) {
+func FindAuthorizedPrincipals(ctx context.Context, conn *opensearchservice.OpenSearchService, domainName string, id string) ([]*opensearchservice.AuthorizedPrincipal, error) {
     input := &opensearchservice.ListVpcEndpointAccessInput{
 		DomainName: aws.String(domainName),
 	}
@@ -97,11 +110,11 @@ func FindAuthorizedPrincipal(ctx context.Context, conn *opensearchservice.OpenSe
 		return nil, err
 	}
 
-	for _, principal := range output.AuthorizedPrincipalList {
-		if id == "authorized-principal-" + *principal.Principal + "-" + *principal.PrincipalType + "-" + domainName {
-			return principal, nil
-		}
-	}
+	principals := output.AuthorizedPrincipalList
 
-	return nil, nil
+	if len(principals) == 0 {
+		return nil, 
+	}
+	return principals, nil
+
 }
